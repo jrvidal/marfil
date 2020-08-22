@@ -45,7 +45,7 @@ Expr: Expr = {
 };
 
 Factor1: Expr = {
-    "if" <test: Factor2> "then" <then: Factor2> "else" <alt: Factor2> => Expr::If { test: Box::new(test), then: Box::new(then), alt: Box::new(alt) },
+    "if" <test: Factor2> <then: Block> "else" <alt: Block> => Expr::If { test: Box::new(test), then: Box::new(then), alt: Box::new(alt) },
     Factor2 => <>
 };
 
@@ -84,6 +84,10 @@ Atom: Expr = {
     }),
     // "(" <exprs:(<Expr> ",")+> <expr: Expr> ")" => Expr::Tuple(exprs),
     "()" => Expr::Unit,
+    <Block> => <>
+}
+
+Block: Expr = {
     "{" <decls: DeclarationsAndExpr> "}" => Expr::Block(decls.0, Box::new(decls.1))
 }
 
