@@ -1,0 +1,138 @@
+use std::str::FromStr;
+use crate::ast::{Expr, Type, Declaration, Program};
+
+grammar;
+
+match {
+    r"\s*" => { }, // The default whitespace skipping is disabled an `ignore pattern` is specified
+    r"//[^\n\r]*[\n\r]*" => { }, // Skip `// comments`
+} else {
+    _
+}
+
+pub Program: Program = {
+    <decls: DeclarationsAndMaybeExpr> => Program(decls.0, decls.1)
+};
+
+DeclarationList: Vec<Declaration> = {
+    <list: DeclarationList> <decl: Declaration> => {
+        let mut list = list;
+        list.push(decl);
+        list
+    },
+    <decl: Declaration> => vec![<>]
+}
+
+DeclarationsAndMaybeExpr: (Vec<Declaration>, Option<Expr>) = {
+    <decls: DeclarationsAndExpr> => (decls.0, Some(decls.1)),
+    <DeclarationList> => (<>, None)
+}
+
+DeclarationsAndExpr: (Vec<Declaration>, Expr) = {
+    <Expr> => (vec![], <>),
+    <list: DeclarationList> <expr: Expr> => (list, expr)
+}
+
+Declaration: Declaration = {
+    <expr: Expr> ";" => Declaration::Expr(expr),
+    "let" <var: Var> "=" <expr: Expr> ";" => Declaration::Let(var, expr),
+    "letrec" <var: Var> ":" <ty: Type> "=" <expr: Expr> ";" => Declaration::LetRec(var, ty, expr)
+}
+
+Expr: Expr = {
+    "fn" "(" <arg: Var> ":" <ty: Type> ")" "=>" <expr: Factor1> => Expr::Func { arg, ty, body: Box::new(expr) },
+    Factor1 => <>
+};
+
+Factor1: Expr = {
+    "if" <test: Factor2> "then" <then: Factor2> "else" <alt: Factor2> => Expr::If { test: Box::new(test), then: Box::new(then), alt: Box::new(alt) },
+    Factor2 => <>
+};
+
+Factor2: Expr = {
+    <op1: Factor2> "+" <op2: Factor3> => Expr::Plus(Box::new(op1), Box::new(op2)),
+    <op1: Factor2> "-" <op2: Factor3> => Expr::Minus(Box::new(op1), Box::new(op2)),
+    Factor3 => <>
+}
+
+Factor3: Expr ={
+    <op1: Factor3> "*" <op2: Factor4> => Expr::Prod(Box::new(op1), Box::new(op2)),
+    <op1: Factor3> "/" <op2: Factor4> => Expr::Div(Box::new(op1), Box::new(op2)),
+    <op1: Factor3> "&&" <op2: Factor4> => Expr::And(Box::new(op1), Box::new(op2)),
+    <op1: Factor3> "||" <op2: Factor4> => Expr::Or(Box::new(op1), Box::new(op2)),
+    <op1: Factor3> "==" <op2: Factor4> => Expr::Eq(Box::new(op1), Box::new(op2)),
+    Factor4 => <>,
+}
+
+Factor4: Expr ={
+    "!" <expr: Atom> => Expr::Neg(Box::new(expr)),
+    <expr: Atom> <index: r"\.[0-9]+"> => Expr::TupleAccess(Box::new(expr), usize::from_str(&index[1..]).unwrap()),
+    Atom => <>,
+}
+
+Atom: Expr = {
+    Int => Expr::Int(<>),
+    String => Expr::String(<>),
+    Bool => Expr::Bool(<>),
+    Var => Expr::Var(<>),
+    <fun: Var> "(" <arg: Expr> ")" => Expr::Call(fun, Box::new(arg)),
+    "(" <expr:Expr> ")" => expr,
+    "(" <exprs:(<Expr> ",")+> <expr: Expr?> ")" => Expr::Tuple({
+        let mut exprs = exprs;
+        exprs.extend(expr.into_iter());
+        exprs
+    }),
+    // "(" <exprs:(<Expr> ",")+> <expr: Expr> ")" => Expr::Tuple(exprs),
+    "()" => Expr::Unit,
+    "{" <decls: DeclarationsAndExpr> "}" => Expr::Block(decls.0, Box::new(decls.1))
+}
+
+Int: i64 = {
+    r"-?[0-9]+" => i64::from_str(<>).unwrap()
+};
+
+Bool: bool = {
+    "true" => true,
+    "false" => false
+};
+
+String: String = {
+    r###""[^"\n]+""### => (<>)[1..((<>).len() - 1)].to_owned()
+};
+
+Var: String = {
+    r"[_a-zA-Z][A-Za-z0-9_]*" => (<>).to_owned()
+};
+
+
+Type: Type = {
+    <ty: TypeAtom> "->" <ret: Type> => Type::Func(Box::new(ty), Box::new(ret)),
+    <TypeAtom> => <>
+}
+
+
+TypeAtom: Type = {
+    "int" => Type::Int,
+    "bool" => Type::Bool,
+    "string" => Type::String,
+    "()" => Type::Unit,
+    ParenthesizedType => <>
+}
+
+ParenthesizedType: Type = {
+    "(" <ty: Type> ")" => ty,
+    "(" <tys: (<Type> ",")+> <ty: Type?> ")" => Type::Tuple({
+        let mut tys = tys;
+        tys.extend(ty.into_iter());
+        tys
+    }),
+}
+
+TypeList: Vec<Type> = {
+    <Type> => vec![<>],
+    <list: TypeList> "," <ty: Type> => {
+        let mut list = list;
+        list.push(ty);
+        list
+    }  
+}
