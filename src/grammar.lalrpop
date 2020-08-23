@@ -1,7 +1,7 @@
 use std::str::FromStr;
-use crate::ast::{Expr, Type, Declaration, Program};
+use crate::ast::{Expr, Type, Declaration, Program, Interner};
 
-grammar;
+grammar(interner: &mut Interner);
 
 match {
     r"\s*" => { }, // The default whitespace skipping is disabled an `ignore pattern` is specified
@@ -35,12 +35,13 @@ DeclarationsAndExpr: (Vec<Declaration>, Expr) = {
 
 Declaration: Declaration = {
     <expr: Expr> ";" => Declaration::Expr(expr),
-    "let" <var: Var> "=" <expr: Expr> ";" => Declaration::Let(var, expr),
-    "letrec" <var: Var> ":" <ty: Type> "=" <expr: Expr> ";" => Declaration::LetRec(var, ty, expr)
+    "let" <var: Var> "=" <expr: Expr> ";" => Declaration::Let(interner.insert(var), expr),
+    "letrec" <var: Var> ":" <ty: Type> "=" <expr: Expr> ";" => Declaration::LetRec(interner.insert(var), ty, expr),
+    "type" <name: Var> "=" <ty: Type> ";" => Declaration::Type(interner.insert_type(name), ty)
 }
 
 Expr: Expr = {
-    "fn" "(" <arg: Var> ":" <ty: Type> ")" "=>" <expr: Factor1> => Expr::Func { arg, ty, body: Box::new(expr) },
+    "fn" "(" <arg: Var> ":" <ty: Type> ")" "=>" <expr: Factor1> => Expr::Func { arg: interner.insert(arg), ty, body: Box::new(expr) },
     Factor1 => <>
 };
 
@@ -74,8 +75,8 @@ Atom: Expr = {
     Int => Expr::Int(<>),
     String => Expr::String(<>),
     Bool => Expr::Bool(<>),
-    Var => Expr::Var(<>),
-    <fun: Var> "(" <arg: Expr> ")" => Expr::Call(fun, Box::new(arg)),
+    Var => Expr::Var(interner.insert(<>)),
+    <fun: Var> "(" <arg: Expr> ")" => Expr::Call(interner.insert(fun), Box::new(arg)),
     "(" <expr:Expr> ")" => expr,
     "(" <exprs:(<Expr> ",")+> <expr: Expr?> ")" => Expr::Tuple({
         let mut exprs = exprs;
@@ -120,6 +121,7 @@ TypeAtom: Type = {
     "bool" => Type::Bool,
     "string" => Type::String,
     "()" => Type::Unit,
+    <Var> => Type::Var(interner.insert_type(<>)),
     ParenthesizedType => <>
 }
 

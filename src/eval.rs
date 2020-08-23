@@ -1,4 +1,4 @@
-use crate::ast;
+use crate::ast::{self, Interner, StringIndex};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::{fmt, ops::Deref};
@@ -23,7 +23,7 @@ impl Deref for Branch {
 
 #[derive(Clone)]
 pub struct Env {
-    vars: Rc<HashMap<String, Value>>,
+    vars: Rc<HashMap<StringIndex, Value>>,
 }
 
 impl fmt::Debug for Env {
@@ -36,7 +36,7 @@ impl fmt::Debug for Env {
 pub enum Value {
     Unit,
     Int(i64),
-    String(String),
+    String(Rc<String>),
     Bool(bool),
     Fn(Branch, Env),
     Tuple(Vec<Value>),
@@ -50,12 +50,12 @@ type Step = usize;
 pub enum Op {
     PushSelf,
     PushInt(i64),
-    PushString(String),
+    PushString(Rc<String>),
     PushBool(bool),
-    PushFn(Branch, HashSet<String>),
+    PushFn(Branch, HashSet<StringIndex>),
     PushUnit,
-    Load(String),
-    Store(String),
+    Load(StringIndex),
+    Store(StringIndex),
     Pop,
     PushEnv,
     PopEnv,
@@ -88,27 +88,28 @@ pub fn compile(program: ast::Program) -> Result<Vec<Op>, String> {
     Ok(buffer)
 }
 
-#[derive(Debug)]
 pub struct Machine {
     stack: Vec<Value>,
-    envs: Vec<HashMap<String, Value>>,
+    envs: Vec<HashMap<StringIndex, Value>>,
     branch: Branch,
     pc: usize,
     self_: Option<Env>,
+    interner: Interner,
 }
 
 impl Machine {
-    pub fn new(ops: Vec<Op>) -> Machine {
+    pub fn new(ops: Vec<Op>, interner: Interner) -> Machine {
         Machine {
             pc: 0,
             envs: vec![HashMap::new()],
             stack: vec![],
             branch: Branch(Rc::new(ops)),
             self_: None,
+            interner,
         }
     }
 
-    pub fn run(mut self) -> Result<Option<Value>, String> {
+    pub fn run(mut self) -> Result<Value, String> {
         while self.pc < self.branch.len() {
             self.tick()?;
         }
@@ -116,7 +117,7 @@ impl Machine {
         if self.stack.len() > 1 {
             Err("Unexpected multiple values")?
         } else {
-            Ok(self.stack.pop())
+            Ok(self.stack.pop().unwrap_or(Value::Unit))
         }
     }
 
@@ -139,13 +140,13 @@ impl Machine {
             Op::PushFn(fun, free_vars) => {
                 let env = free_vars
                     .iter()
-                    .filter_map(|var| self.read(var).ok().map(|val| (var.clone(), val)))
+                    .filter_map(|var| self.read(*var).ok().map(|val| (var.clone(), val)))
                     .collect::<HashMap<_, _>>();
                 self.stack
                     .push(Value::Fn(fun.clone(), Env { vars: Rc::new(env) }));
             }
             Op::Load(var) => {
-                let val = self.read(var)?;
+                let val = self.read(*var)?;
                 self.stack.push(val);
             }
             Op::Store(var) => {
@@ -200,7 +201,7 @@ impl Machine {
                 let result = match (val1, val2) {
                     (Value::Int(m), Value::Int(n)) => Value::Int(m + n),
                     (Value::String(s1), Value::String(s2)) => {
-                        Value::String(String::new() + &s1 + &s2)
+                        Value::String(Rc::new(String::new() + &s1 + &s2))
                     }
                     _ => Err("Invalid types for add")?,
                 };
@@ -355,18 +356,21 @@ impl Machine {
         Ok(())
     }
 
-    fn env(&mut self) -> &mut HashMap<String, Value> {
+    fn env(&mut self) -> &mut HashMap<StringIndex, Value> {
         self.envs.last_mut().unwrap()
     }
 
-    fn read(&self, var: &str) -> Result<Value, String> {
+    fn read(&self, var: StringIndex) -> Result<Value, String> {
         for env in self.envs.iter().rev() {
-            if let Some(val) = env.get(var) {
+            if let Some(val) = env.get(&var) {
                 return Ok(val.clone());
             }
         }
 
-        Err(format!("Unable to find {} in environment", var))?
+        Err(format!(
+            "Unable to find {} in environment",
+            var.display(&self.interner)
+        ))?
     }
 
     fn pop(&mut self) -> Result<Value, String> {
@@ -379,7 +383,7 @@ impl Machine {
 fn compile_expr(expr: ast::Expr, buffer: &mut Vec<Op>) -> Result<(), String> {
     match expr {
         ast::Expr::Bool(b) => buffer.push(Op::PushBool(b)),
-        ast::Expr::String(s) => buffer.push(Op::PushString(s)),
+        ast::Expr::String(s) => buffer.push(Op::PushString(Rc::new(s))),
         ast::Expr::Int(n) => buffer.push(Op::PushInt(n)),
         ast::Expr::Var(var) => buffer.push(Op::Load(var)),
         ast::Expr::Neg(op) => {
@@ -466,7 +470,7 @@ fn compile_expr(expr: ast::Expr, buffer: &mut Vec<Op>) -> Result<(), String> {
         ast::Expr::Unit => buffer.push(Op::PushUnit),
         ast::Expr::Tuple(exprs) => {
             let n = exprs.len();
-            for expr in exprs {
+            for expr in exprs.into_iter().rev() {
                 compile_expr(expr, buffer)?;
             }
             buffer.push(Op::Tuple(n));
@@ -496,6 +500,7 @@ fn compile_declaration(decl: ast::Declaration, buffer: &mut Vec<Op>) -> Result<(
             compile_expr(expr, buffer)?;
             buffer.push(Op::Store(var));
         }
+        ast::Declaration::Type(_, _) => {}
     }
     Ok(())
 }

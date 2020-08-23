@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+};
 
 #[derive(Debug)]
 pub struct Program(pub Vec<Declaration>, pub Option<Expr>);
@@ -7,14 +10,14 @@ pub struct Program(pub Vec<Declaration>, pub Option<Expr>);
 pub enum Expr {
     Bool(bool),
     String(String),
-    Var(String),
+    Var(StringIndex),
     Int(i64),
     Func {
-        arg: String,
+        arg: StringIndex,
         ty: Type,
         body: Box<Expr>,
     },
-    Call(String, Box<Expr>),
+    Call(StringIndex, Box<Expr>),
     Neg(Box<Expr>),
     Plus(Box<Expr>, Box<Expr>),
     Minus(Box<Expr>, Box<Expr>),
@@ -35,11 +38,11 @@ pub enum Expr {
 }
 
 impl Expr {
-    pub fn free_vars(&self) -> HashSet<String> {
+    pub fn free_vars(&self) -> HashSet<StringIndex> {
         enum FreeVarsOp<'a> {
             Expr(&'a Expr),
             Pop,
-            Push(&'a String),
+            Push(StringIndex),
         }
         let mut stack = Vec::new();
         stack.push(FreeVarsOp::Expr(self));
@@ -65,7 +68,7 @@ impl Expr {
                     }
                 }
                 Expr::Func { arg, body, .. } => {
-                    ctx.push(arg);
+                    ctx.push(*arg);
                     stack.push(FreeVarsOp::Pop);
                     stack.push(FreeVarsOp::Expr(body));
                 }
@@ -77,15 +80,16 @@ impl Expr {
                         match decl {
                             Declaration::Expr(expr) => ops.push(FreeVarsOp::Expr(expr)),
                             Declaration::Let(var, expr) => {
-                                ops.push(FreeVarsOp::Push(var));
+                                ops.push(FreeVarsOp::Push(*var));
                                 vars.push(var);
                                 ops.push(FreeVarsOp::Expr(expr));
                             }
                             Declaration::LetRec(var, _, expr) => {
                                 ops.push(FreeVarsOp::Expr(expr));
-                                ops.push(FreeVarsOp::Push(var));
+                                ops.push(FreeVarsOp::Push(*var));
                                 vars.push(var);
                             }
+                            Declaration::Type(..) => {}
                         }
                     }
                     stack.extend(vars.into_iter().map(|_| FreeVarsOp::Pop));
@@ -129,6 +133,106 @@ impl Expr {
     }
 }
 
+pub trait Visitor: Sized {
+    fn visit_program(&mut self, program: &Program) {
+        visit_program(self, program)
+    }
+
+    fn visit_declaration(&mut self, declaration: &Declaration) {
+        visit_declaration(self, declaration)
+    }
+
+    fn visit_expr(&mut self, expr: &Expr) {
+        visit_expr(self, expr)
+    }
+}
+
+pub fn visit_program(v: &mut impl Visitor, program: &Program) {
+    for decl in &program.0 {
+        v.visit_declaration(decl);
+    }
+    program.1.iter().for_each(|expr| v.visit_expr(expr));
+}
+
+pub fn visit_declaration(v: &mut impl Visitor, declaration: &Declaration) {
+    match declaration {
+        Declaration::Expr(expr) => v.visit_expr(expr),
+        Declaration::Let(_, expr) => v.visit_expr(expr),
+        Declaration::LetRec(_, _, expr) => v.visit_expr(expr),
+        Declaration::Type(..) => {}
+    }
+}
+
+pub fn visit_expr(v: &mut impl Visitor, expr: &Expr) {
+    match expr {
+        Expr::Bool(_) | Expr::String(_) | Expr::Var(_) | Expr::Unit | Expr::Int(_) => {}
+        Expr::Call(_, e) | Expr::Func { body: e, .. } | Expr::TupleAccess(e, _) | Expr::Neg(e) => {
+            v.visit_expr(e)
+        }
+        Expr::Plus(e1, e2)
+        | Expr::Minus(e1, e2)
+        | Expr::Prod(e1, e2)
+        | Expr::Div(e1, e2)
+        | Expr::And(e1, e2)
+        | Expr::Or(e1, e2)
+        | Expr::Eq(e1, e2) => {
+            v.visit_expr(e1);
+            v.visit_expr(e2);
+        }
+        Expr::If { test, then, alt } => {
+            v.visit_expr(test);
+            v.visit_expr(then);
+            v.visit_expr(alt);
+        }
+        Expr::Block(decls, e) => {
+            decls.iter().for_each(|decl| v.visit_declaration(decl));
+            v.visit_expr(e);
+        }
+        Expr::Tuple(exprs) => exprs.iter().for_each(|e| v.visit_expr(e)),
+    }
+}
+
+impl Type {
+    pub fn vars(&self) -> HashSet<TypeIndex> {
+        let mut ret: HashSet<TypeIndex> = Default::default();
+        let mut stack = vec![self];
+
+        while let Some(ty) = stack.pop() {
+            match ty {
+                Type::Bool | Type::String | Type::Int | Type::Unit | Type::Tuple(..) => {}
+                Type::Var(name) => {
+                    ret.insert(*name);
+                }
+                Type::Func(arg, out) => {
+                    stack.push(arg);
+                    stack.push(out);
+                }
+            }
+        }
+
+        ret
+    }
+
+    pub fn substitute(&mut self, var: TypeIndex, ty: Type) {
+        match self {
+            Type::Bool | Type::String | Type::Int | Type::Unit => {}
+            Type::Func(arg, out) => {
+                arg.substitute(var, ty.clone());
+                out.substitute(var, ty);
+            }
+            Type::Tuple(tys) => {
+                tys.iter_mut()
+                    .for_each(|tuple_ty| tuple_ty.substitute(var, ty.clone()));
+            }
+            Type::Var(v) => {
+                if var == *v {
+                    *self = ty;
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Bool,
@@ -136,39 +240,107 @@ pub enum Type {
     Int,
     Func(Box<Type>, Box<Type>),
     Tuple(Vec<Type>),
+    Var(TypeIndex),
     Unit,
 }
 
 #[derive(Debug)]
 pub enum Declaration {
-    Let(String, Expr),
-    LetRec(String, Type, Expr),
+    Let(StringIndex, Expr),
+    LetRec(StringIndex, Type, Expr),
     Expr(Expr),
+    Type(TypeIndex, Type),
 }
 
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct Interner {
     strings: Vec<String>,
     from_string: HashMap<String, usize>,
 }
 
-#[allow(dead_code)]
 impl Interner {
-    fn insert(&mut self, s: String) -> InternerIndex {
+    pub fn insert(&mut self, s: String) -> StringIndex {
+        StringIndex(self.insert_raw(s))
+    }
+
+    pub fn insert_type(&mut self, s: String) -> TypeIndex {
+        TypeIndex(self.insert_raw(s))
+    }
+
+    fn insert_raw(&mut self, s: String) -> usize {
         if let Some(&idx) = self.from_string.get(&s) {
-            return InternerIndex(idx);
+            return idx;
         }
         let index = self.strings.len();
         self.strings.push(s.clone());
         self.from_string.insert(s, index);
-        InternerIndex(index)
+        index
     }
 
-    fn get(&self, index: InternerIndex) -> &str {
-        &self.strings[index.0]
+    pub fn get(&self, index: impl InternerIndex) -> &str {
+        &self.strings[index.raw()]
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Debug, Eq)]
-struct InternerIndex(usize);
+pub trait InternerIndex {
+    fn raw(&self) -> usize;
+}
+
+macro_rules! index_type {
+    ($name:ident, $display:ident) => {
+        #[derive(Clone, Copy, PartialEq, Debug, Eq, Hash)]
+        pub struct $name(usize);
+
+        pub struct $display<'a> {
+            index: $name,
+            interner: &'a Interner,
+        }
+
+        impl $name {
+            pub fn display<'a>(&self, interner: &'a Interner) -> $display<'a> {
+                $display {
+                    index: *self,
+                    interner,
+                }
+            }
+        }
+
+        impl<'a> fmt::Display for $display<'a> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.interner.get(self.index))
+            }
+        }
+
+        impl InternerIndex for $name {
+            fn raw(&self) -> usize {
+                self.0
+            }
+        }
+    };
+}
+
+index_type![StringIndex, StringIndexDisplay];
+index_type![TypeIndex, TypeIndexDisplay];
+
+// #[derive(Clone, Copy, PartialEq, Debug, Eq, Hash)]
+// pub struct StringIndex(usize);
+
+// pub struct StringIndexDisplay<'a> {
+//     index: StringIndex,
+//     interner: &'a Interner
+// }
+
+// impl StringIndex {
+//     pub fn display<'a>(&self, interner: &'a Interner) -> StringIndexDisplay<'a> {
+//         StringIndexDisplay {
+//             index: *self,
+//             interner
+//         }
+//     }
+// }
+
+// impl<'a> fmt::Display for StringIndexDisplay<'a> {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         f.write_str(self.interner.get(self.index))
+//     }
+// }

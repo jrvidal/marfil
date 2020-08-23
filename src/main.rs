@@ -11,8 +11,9 @@ fn main() {
     let cmd = std::env::args().skip(1).next().unwrap();
     let path = std::env::args().skip(2).next().unwrap();
     let source = std::fs::read_to_string(&path).expect(&format!("Error opening {}", path));
+    let mut interner = ast::Interner::default();
 
-    let ast_result = grammar::ProgramParser::new().parse(&source);
+    let ast_result = grammar::ProgramParser::new().parse(&mut interner, &source);
 
     if cmd == "parse" {
         eprintln!("{:?}", ast_result);
@@ -26,7 +27,7 @@ fn main() {
         return;
     }
 
-    let typecheck_result = typeck::type_check(&ast);
+    let typecheck_result = typeck::type_check_program(&ast, &interner);
     if cmd == "typeck" {
         eprintln!("{:?}", typecheck_result);
         return;
@@ -43,7 +44,7 @@ fn main() {
 
     let compilation = compilation_result.unwrap();
 
-    let machine = eval::Machine::new(compilation);
+    let machine = eval::Machine::new(compilation, interner);
 
     if cmd == "eval" {
         eprintln!("{:?}", machine.run());
@@ -82,7 +83,7 @@ fn some_programs() {
     ];
 
     for program in &programs {
-        let result = grammar::ProgramParser::new().parse(program);
+        let result = grammar::ProgramParser::new().parse(&mut ast::Interner::default(), program);
         assert!(result.is_ok(), "source: {}\n result: {:?}", program, result);
     }
 }
@@ -117,7 +118,7 @@ fn specificity() {
 #[cfg(test)]
 fn expr(source: &str) -> ast::Expr {
     grammar::ProgramParser::new()
-        .parse(source)
+        .parse(&mut ast::Interner::default(), source)
         .expect(&format!("Parser error with {}", source))
         .1
         .unwrap()
