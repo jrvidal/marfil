@@ -40,6 +40,7 @@ pub enum Value {
     Bool(bool),
     Fn(Branch, Env),
     Tuple(Vec<Value>),
+    Array(Rc<Vec<Value>>),
     Address(Branch, usize, Option<Env>),
     Self_,
 }
@@ -73,6 +74,9 @@ pub enum Op {
     Ret,
     Tuple(usize),
     TupleAccess(usize),
+    Array(usize),
+    ArrayUpdate,
+    ArrayAccess
 }
 
 pub fn compile(program: ast::Program) -> Result<Vec<Op>, String> {
@@ -350,6 +354,37 @@ impl Machine {
                     _ => Err("Unexpected index access for non-indexable value")?,
                 }
             }
+            Op::Array(n) => {
+                let elements: Vec<_> = (0..*n).map(|_| self.pop()).collect::<Result<_, _>>()?;
+                self.stack.push(Value::Array(elements.into()));
+            }
+            Op::ArrayUpdate => {
+                let value = self.pop()?;
+                let index = self.pop()?;
+                let array = self.pop()?;
+
+                match (index, array) {
+                    (Value::Int(i), Value::Array(mut elements)) => {
+                        if i >= 0 && (i as usize) < elements.len() {
+                            Rc::make_mut(&mut elements)[i as usize] = value;
+                            self.stack.push(Value::Array(elements))
+                        }
+                    },
+                    _ => Err("Unexpected update for non-int or non-array")?
+                }
+            }
+            Op::ArrayAccess => {
+                let default = self.pop()?;
+                let index = self.pop()?;
+                let array = self.pop()?;
+
+                match (index, array) {
+                    (Value::Int(i), Value::Array(elements)) => {
+                        self.stack.push(elements.get(i as usize).cloned().unwrap_or(default));
+                    },
+                    _ => Err("Unexpected array access for non-int or non-array")?
+                }
+            }
         }
 
         self.pc += 1;
@@ -478,6 +513,28 @@ fn compile_expr(expr: ast::Expr, buffer: &mut Vec<Op>) -> Result<(), String> {
         ast::Expr::TupleAccess(expr, index) => {
             compile_expr(*expr, buffer)?;
             buffer.push(Op::TupleAccess(index));
+        }
+        ast::Expr::ArrayInit { elements, update } => {
+            let length = elements.len();
+            for (element, rest) in elements.into_iter().rev() {
+                assert!(!rest);
+                compile_expr(element, buffer)?
+            };
+            buffer.push(Op::Array(length));
+            if let Some((index, value)) = update.map(|x| *x) {
+                compile_expr(index, buffer)?;
+                compile_expr(value, buffer)?;
+                buffer.push(Op::ArrayUpdate);
+            }
+        }
+        ast::Expr::ImplicitArrayInit { init, length } => {
+            todo!()
+        }
+        ast::Expr::ArrayAccess { array, index, default } => {
+            buffer.push(Op::Load(array));
+            compile_expr(*index, buffer)?;
+            compile_expr(*default, buffer)?;
+            buffer.push(Op::ArrayAccess);
         }
     }
 

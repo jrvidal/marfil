@@ -68,6 +68,7 @@ Factor3: Expr ={
 Factor4: Expr ={
     "!" <expr: Atom> => Expr::Neg(Box::new(expr)),
     <expr: Atom> <index: r"\.[0-9]+"> => Expr::TupleAccess(Box::new(expr), usize::from_str(&index[1..]).unwrap()),
+    <array: Var> "[" <index: Atom> "]" "|" <default: Atom> => Expr::ArrayAccess { array: interner.insert(array), index: index.into(), default: default.into() },
     Atom => <>,
 }
 
@@ -83,9 +84,21 @@ Atom: Expr = {
         exprs.extend(expr.into_iter());
         exprs
     }),
-    // "(" <exprs:(<Expr> ",")+> <expr: Expr> ")" => Expr::Tuple(exprs),
     "()" => Expr::Unit,
-    <Block> => <>
+    <Block> => <>,
+    "[" <init: Expr> ";" <length: Expr> "]" => Expr::ImplicitArrayInit { init: Box::new(init), length: Box::new(length) },
+    "[" <exprs: ("..."? Expr ",")+> "]" => Expr::ArrayInit {
+        update: None,
+        elements: exprs.into_iter().map(|(rest, ex, _)| (ex, rest.is_some())).collect()
+    },
+    "[" <exprs: ("..."? Expr ",")*> <tail: ("..."? Expr)> <update: (";" Expr "=" Expr)?> "]" => Expr::ArrayInit {
+        update: update.map(|(_, index, _, value)| (index, value).into()),
+        elements: exprs.into_iter()
+            .map(|(rest, ex, _)| (rest, ex))
+            .chain(std::iter::once(tail))
+            .map(|(rest, ex)| (ex, rest.is_some()))
+            .collect()
+    },
 }
 
 Block: Expr = {
@@ -112,6 +125,7 @@ Var: String = {
 
 Type: Type = {
     <ty: TypeAtom> "->" <ret: Type> => Type::Func(Box::new(ty), Box::new(ret)),
+    <TypeAtom> "[]" => Type::Array(<>.into()),
     <TypeAtom> => <>
 }
 

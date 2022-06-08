@@ -9,6 +9,19 @@ pub struct Program(pub Vec<Declaration>, pub Option<Expr>);
 #[derive(Debug)]
 pub enum Expr {
     Bool(bool),
+    ArrayInit {
+        elements: Vec<(Expr, bool)>,
+        update: Option<Box<(Expr, Expr)>>
+    },
+    ImplicitArrayInit {
+        init: Box<Expr>,
+        length: Box<Expr>
+    },
+    ArrayAccess {
+        array: StringIndex,
+        index: Box<Expr>,
+        default: Box<Expr>
+    },
     String(String),
     Var(StringIndex),
     Int(i64),
@@ -110,7 +123,7 @@ impl Expr {
                 }
                 Expr::Call(fun, arg) => {
                     if !ctx.contains(&fun) {
-                        ret.insert(fun.clone());
+                        ret.insert(*fun);
                     }
                     stack.push(FreeVarsOp::Expr(&*arg));
                 }
@@ -125,6 +138,24 @@ impl Expr {
                 }
                 Expr::TupleAccess(expr, _) => {
                     stack.push(FreeVarsOp::Expr(&*expr));
+                }
+                Expr::ArrayInit { elements, update } => {
+                    stack.extend(elements.iter().map(|(e, _)| FreeVarsOp::Expr(e)));
+                    if let Some((index, value)) = update.as_deref() {
+                        stack.push(FreeVarsOp::Expr(index));
+                        stack.push(FreeVarsOp::Expr(value));
+                    }
+                }
+                Expr::ImplicitArrayInit { init, length } => {
+                    stack.push(FreeVarsOp::Expr(&*init));
+                    stack.push(FreeVarsOp::Expr(&*length));
+                }
+                Expr::ArrayAccess { array, index, default } => {
+                    if !ctx.contains(array) {
+                        ret.insert(*array);
+                    }
+                    stack.push(FreeVarsOp::Expr(&*index));
+                    stack.push(FreeVarsOp::Expr(&*default));
                 }
             }
         }
@@ -189,6 +220,21 @@ pub fn visit_expr(v: &mut impl Visitor, expr: &Expr) {
             v.visit_expr(e);
         }
         Expr::Tuple(exprs) => exprs.iter().for_each(|e| v.visit_expr(e)),
+        Expr::ArrayInit { elements, update } => {
+            elements.iter().for_each(|(ex, _)| v.visit_expr(ex));
+            update.as_deref().iter().for_each(|(index, value)| {
+                v.visit_expr(index);
+                v.visit_expr(value);
+            });
+        }
+        Expr::ImplicitArrayInit { init, length } => {
+            v.visit_expr(init);
+            v.visit_expr(length);
+        }
+        Expr::ArrayAccess { array, index, default } => {
+            v.visit_expr(index);
+            v.visit_expr(default);
+        }
     }
 }
 
@@ -199,13 +245,19 @@ impl Type {
 
         while let Some(ty) = stack.pop() {
             match ty {
-                Type::Bool | Type::String | Type::Int | Type::Unit | Type::Tuple(..) => {}
+                Type::Bool | Type::String | Type::Int | Type::Unit => {}
                 Type::Var(name) => {
                     ret.insert(*name);
                 }
                 Type::Func(arg, out) => {
                     stack.push(arg);
                     stack.push(out);
+                },
+                Type::Array(ty) => {
+                    stack.push(ty);
+                },
+                Type::Tuple(tys) => {
+                    stack.extend(tys.iter());
                 }
             }
         }
@@ -229,16 +281,41 @@ impl Type {
                     *self = ty;
                 }
             }
+            Type::Array(array_ty) => array_ty.substitute(var, ty)
         }
+    }
+
+    pub fn has_default(&self) -> bool {
+        let mut stack = vec![self];
+
+        while let Some(ty) = stack.pop() {
+            match ty {
+                Type::Func(_, _) => return false,
+                Type::Bool |
+                Type::String |
+                Type::Int |
+                Type::Unit => {}
+                Type::Array(array_ty) => {
+                    stack.push(array_ty);
+                }
+                Type::Tuple(tys) => {
+                    stack.extend(tys.iter());
+                }
+                Type::Var(_) => unreachable!()
+            }
+        }
+
+        true
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Bool,
     String,
     Int,
     Func(Box<Type>, Box<Type>),
+    Array(Box<Type>),
     Tuple(Vec<Type>),
     Var(TypeIndex),
     Unit,
