@@ -11,16 +11,16 @@ pub enum Expr {
     Bool(bool),
     ArrayInit {
         elements: Vec<(Expr, bool)>,
-        update: Option<Box<(Expr, Expr)>>
+        update: Option<Box<(Expr, Expr)>>,
     },
     ImplicitArrayInit {
         init: Box<Expr>,
-        length: Box<Expr>
+        length: Box<Expr>,
     },
     ArrayAccess {
-        array: StringIndex,
+        array: Box<Expr>,
         index: Box<Expr>,
-        default: Box<Expr>
+        default: Box<Expr>,
     },
     String(String),
     Var(StringIndex),
@@ -39,6 +39,10 @@ pub enum Expr {
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
     Eq(Box<Expr>, Box<Expr>),
+    Lt(Box<Expr>, Box<Expr>),
+    Lte(Box<Expr>, Box<Expr>),
+    Gt(Box<Expr>, Box<Expr>),
+    Gte(Box<Expr>, Box<Expr>),
     If {
         test: Box<Expr>,
         then: Box<Expr>,
@@ -117,6 +121,10 @@ impl Expr {
                 | Expr::Prod(e1, e2)
                 | Expr::Div(e1, e2)
                 | Expr::Eq(e1, e2)
+                | Expr::Lt(e1, e2)
+                | Expr::Lte(e1, e2)
+                | Expr::Gt(e1, e2)
+                | Expr::Gte(e1, e2)
                 | Expr::Or(e1, e2) => {
                     stack.push(FreeVarsOp::Expr(&*e1));
                     stack.push(FreeVarsOp::Expr(&*e2));
@@ -150,10 +158,15 @@ impl Expr {
                     stack.push(FreeVarsOp::Expr(&*init));
                     stack.push(FreeVarsOp::Expr(&*length));
                 }
-                Expr::ArrayAccess { array, index, default } => {
-                    if !ctx.contains(array) {
-                        ret.insert(*array);
-                    }
+                Expr::ArrayAccess {
+                    array,
+                    index,
+                    default,
+                } => {
+                    // if !ctx.contains(array) {
+                    //     ret.insert(*array);
+                    // }
+                    stack.push(FreeVarsOp::Expr(&*array));
                     stack.push(FreeVarsOp::Expr(&*index));
                     stack.push(FreeVarsOp::Expr(&*default));
                 }
@@ -206,6 +219,10 @@ pub fn visit_expr(v: &mut impl Visitor, expr: &Expr) {
         | Expr::Div(e1, e2)
         | Expr::And(e1, e2)
         | Expr::Or(e1, e2)
+        | Expr::Lt(e1, e2)
+        | Expr::Lte(e1, e2)
+        | Expr::Gt(e1, e2)
+        | Expr::Gte(e1, e2)
         | Expr::Eq(e1, e2) => {
             v.visit_expr(e1);
             v.visit_expr(e2);
@@ -231,7 +248,11 @@ pub fn visit_expr(v: &mut impl Visitor, expr: &Expr) {
             v.visit_expr(init);
             v.visit_expr(length);
         }
-        Expr::ArrayAccess { array, index, default } => {
+        Expr::ArrayAccess {
+            array: _,
+            index,
+            default,
+        } => {
             v.visit_expr(index);
             v.visit_expr(default);
         }
@@ -252,10 +273,10 @@ impl Type {
                 Type::Func(arg, out) => {
                     stack.push(arg);
                     stack.push(out);
-                },
+                }
                 Type::Array(ty) => {
                     stack.push(ty);
-                },
+                }
                 Type::Tuple(tys) => {
                     stack.extend(tys.iter());
                 }
@@ -281,7 +302,7 @@ impl Type {
                     *self = ty;
                 }
             }
-            Type::Array(array_ty) => array_ty.substitute(var, ty)
+            Type::Array(array_ty) => array_ty.substitute(var, ty),
         }
     }
 
@@ -291,17 +312,14 @@ impl Type {
         while let Some(ty) = stack.pop() {
             match ty {
                 Type::Func(_, _) => return false,
-                Type::Bool |
-                Type::String |
-                Type::Int |
-                Type::Unit => {}
+                Type::Bool | Type::String | Type::Int | Type::Unit => {}
                 Type::Array(array_ty) => {
                     stack.push(array_ty);
                 }
                 Type::Tuple(tys) => {
                     stack.extend(tys.iter());
                 }
-                Type::Var(_) => unreachable!()
+                Type::Var(_) => unreachable!(),
             }
         }
 
@@ -324,7 +342,7 @@ pub enum Type {
 #[derive(Debug)]
 pub enum Declaration {
     Let(StringIndex, Expr),
-    LetRec(StringIndex, Type, Expr),
+    LetRec(StringIndex, Option<Type>, Expr),
     Expr(Expr),
     Type(TypeIndex, Type),
 }
@@ -398,26 +416,3 @@ macro_rules! index_type {
 
 index_type![StringIndex, StringIndexDisplay];
 index_type![TypeIndex, TypeIndexDisplay];
-
-// #[derive(Clone, Copy, PartialEq, Debug, Eq, Hash)]
-// pub struct StringIndex(usize);
-
-// pub struct StringIndexDisplay<'a> {
-//     index: StringIndex,
-//     interner: &'a Interner
-// }
-
-// impl StringIndex {
-//     pub fn display<'a>(&self, interner: &'a Interner) -> StringIndexDisplay<'a> {
-//         StringIndexDisplay {
-//             index: *self,
-//             interner
-//         }
-//     }
-// }
-
-// impl<'a> fmt::Display for StringIndexDisplay<'a> {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         f.write_str(self.interner.get(self.index))
-//     }
-// }

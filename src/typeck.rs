@@ -36,9 +36,9 @@ impl<'a> TyContext<'a> {
         }
 
         let mut final_ty = ty.clone();
-        self.aliases.iter().for_each(|(var, resolved_ty)| {
-            final_ty.substitute(*var, resolved_ty.clone())
-        });
+        self.aliases
+            .iter()
+            .for_each(|(var, resolved_ty)| final_ty.substitute(*var, resolved_ty.clone()));
         let value = if final_ty == ty {
             None
         } else {
@@ -64,7 +64,7 @@ pub fn type_check_program(program: &ast::Program, interner: &ast::Interner) -> T
         interner,
         bound: Default::default(),
         aliases: resolved_types,
-        resolved: Default::default()
+        resolved: Default::default(),
     };
 
     let _ = type_check_declarations(&program.0, &mut typing_context)?;
@@ -177,6 +177,8 @@ fn type_check_declarations(
                 vars.insert(*var);
             }
             ast::Declaration::LetRec(var, ty, expr) => {
+                let ty = ty.as_ref().ok_or("letrec must declare a type")?;
+
                 let resolved_ty = ctx.get_resolved(ty.clone());
                 if !matches!(resolved_ty, ast::Type::Func(..)) {
                     Err(format!(
@@ -250,6 +252,27 @@ fn typecheck_expr(expr: &ast::Expr, ctx: &mut TyContext) -> TyResult {
                 ast::Type::Int | ast::Type::String | ast::Type::Bool => ast::Type::Bool,
                 _ => Err(format!(
                     "Values of type {:?} cannot be compared for equality",
+                    ty1
+                ))?,
+            }
+        }
+        ast::Expr::Lt(op1, op2)
+        | ast::Expr::Lte(op1, op2)
+        | ast::Expr::Gt(op1, op2)
+        | ast::Expr::Gte(op1, op2) => {
+            let ty1 = typecheck_expr(op1, ctx)?;
+            let ty2 = typecheck_expr(op2, ctx)?;
+            if ty1 != ty2 {
+                Err(format!(
+                    "Different types cannot be compared by order: [{:?}] + [{:?}]",
+                    ty1, ty2
+                ))?
+            }
+
+            match ty1 {
+                ast::Type::Int => ast::Type::Bool,
+                _ => Err(format!(
+                    "Values of type {:?} cannot be compared by order",
                     ty1
                 ))?,
             }
@@ -480,7 +503,7 @@ fn typecheck_expr(expr: &ast::Expr, ctx: &mut TyContext) -> TyResult {
                 ))?
             }
 
-            if typecheck_expr(length, ctx)? == ast::Type::Int {
+            if typecheck_expr(length, ctx)? != ast::Type::Int {
                 Err("Array length must be an integer")?
             }
 
@@ -491,10 +514,7 @@ fn typecheck_expr(expr: &ast::Expr, ctx: &mut TyContext) -> TyResult {
             index,
             default,
         } => {
-            let array_ty = ctx.get(*array).cloned().ok_or(format!(
-                "Variable {} is not defined",
-                array.display(ctx.interner)
-            ))?;
+            let array_ty = typecheck_expr(array, ctx)?;
             let index_ty = typecheck_expr(index, ctx)?;
             let default_ty = typecheck_expr(default, ctx)?;
 
@@ -528,7 +548,7 @@ struct NamesVisitor {
 impl ast::Visitor for NamesVisitor {
     fn visit_declaration(&mut self, declaration: &ast::Declaration) {
         match declaration {
-            ast::Declaration::LetRec(_, ty, _) => {
+            ast::Declaration::LetRec(_, Some(ty), _) => {
                 self.refs.extend(ty.vars().into_iter());
             }
             ast::Declaration::Type(name, ty) => {
@@ -558,6 +578,10 @@ impl ast::Visitor for NamesVisitor {
             | ast::Expr::And(_, _)
             | ast::Expr::Or(_, _)
             | ast::Expr::Eq(_, _)
+            | ast::Expr::Lt(_, _)
+            | ast::Expr::Lte(_, _)
+            | ast::Expr::Gt(_, _)
+            | ast::Expr::Gte(_, _)
             | ast::Expr::If { .. }
             | ast::Expr::Block(_, _)
             | ast::Expr::Tuple(_)

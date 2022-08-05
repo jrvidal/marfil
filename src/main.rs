@@ -5,6 +5,9 @@ lalrpop_mod!(grammar);
 mod ast;
 mod eval;
 mod typeck;
+#[cfg(test)]
+mod test;
+
 
 fn main() {
     env_logger::init();
@@ -113,6 +116,9 @@ fn specificity() {
 
     let fun2 = expr("fn (x: int) => 1 * 2");
     assert!(std::matches!(fun2, ast::Expr::Func{..}), "{:?}", fun2);
+
+    let eq = expr("1 == 2 + 3");
+    assert!(std::matches!(eq, ast::Expr::Eq{..}), "{:?}", eq);
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 use crate::ast::{self, Interner, StringIndex};
+use core::panic;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::{fmt, ops::Deref};
@@ -45,9 +46,27 @@ pub enum Value {
     Self_,
 }
 
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Int(l0), Self::Int(r0)) => l0 == r0,
+            (Self::String(l0), Self::String(r0)) => l0 == r0,
+            (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
+            (Self::Fn(l0, l1), Self::Fn(r0, r1)) => {
+                Rc::as_ptr(&l0.0) == Rc::as_ptr(&r0.0)
+                    && Rc::as_ptr(&l1.vars) == Rc::as_ptr(&r1.vars)
+            }
+            (Self::Tuple(l0), Self::Tuple(r0)) => l0 == r0,
+            (Self::Array(l0), Self::Array(r0)) => l0 == r0,
+            (Self::Address(..), Self::Address(..)) => false,
+            _ => false,
+        }
+    }
+}
+
 type Step = usize;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Op {
     PushSelf,
     PushInt(i64),
@@ -68,15 +87,20 @@ pub enum Op {
     Substract,
     Multiply,
     Divide,
-    Compare,
+    CompareEq,
+    CompareLt,
+    CompareLte,
+    CompareGt,
+    CompareGte,
     Negate,
     Call,
     Ret,
     Tuple(usize),
     TupleAccess(usize),
     Array(usize),
+    DynArray,
     ArrayUpdate,
-    ArrayAccess
+    ArrayAccess,
 }
 
 pub fn compile(program: ast::Program) -> Result<Vec<Op>, String> {
@@ -245,17 +269,6 @@ impl Machine {
 
                 self.stack.push(result);
             }
-            // Op::And => {
-            //     let val1 = self.pop()?;
-            //     let val2 = self.pop()?;
-
-            //     let result = match (val1, val2) {
-            //         (Value::Bool(b), Value::Bool(c)) => Value::Bool(b && c),
-            //         _ => Err("Invalid types for And")?,
-            //     };
-
-            //     self.stack.push(result);
-            // }
             Op::Negate => {
                 let val1 = self.pop()?;
 
@@ -266,18 +279,7 @@ impl Machine {
 
                 self.stack.push(result);
             }
-            // Op::Or => {
-            //     let val1 = self.pop()?;
-            //     let val2 = self.pop()?;
-
-            //     let result = match (val1, val2) {
-            //         (Value::Bool(b), Value::Bool(c)) => Value::Bool(b || c),
-            //         _ => Err("Invalid types for Or")?,
-            //     };
-
-            //     self.stack.push(result);
-            // }
-            Op::Compare => {
+            Op::CompareEq => {
                 let val1 = self.pop()?;
                 let val2 = self.pop()?;
 
@@ -286,6 +288,24 @@ impl Machine {
                     (Value::Int(b), Value::Int(c)) => Value::Bool(b == c),
                     (Value::String(b), Value::String(c)) => Value::Bool(b == c),
                     _ => Err("Invalid types for Compare")?,
+                };
+
+                self.stack.push(result);
+            }
+            Op::CompareLt | Op::CompareLte | Op::CompareGt | Op::CompareGte => {
+                let op = op.clone();
+                let val1 = self.pop()?;
+                let val2 = self.pop()?;
+
+                let result = match (val1, val2) {
+                    (Value::Int(b), Value::Int(c)) => Value::Bool(match op {
+                        Op::CompareLt => b < c,
+                        Op::CompareLte => b <= c,
+                        Op::CompareGt => b > c,
+                        Op::CompareGte => b >= c,
+                        _ => unreachable!(),
+                    }),
+                    _ => Err("Invalid types for order comparison")?,
                 };
 
                 self.stack.push(result);
@@ -332,6 +352,24 @@ impl Machine {
                 self.stack.push(val.clone());
                 self.stack.push(val);
             }
+            Op::DynArray => {
+                let val = self.pop()?;
+                let length = self.pop()?;
+
+                let length = if let Value::Int(n) = length {
+                    n
+                } else {
+                    return Err("Invalid duplication")?;
+                };
+
+                if length < 0 {
+                    Err("Invalid negative number of repetitions for duplication")?;
+                }
+
+                let values = (0..length).map(|_| val.clone()).collect::<Vec<_>>();
+
+                self.stack.push(Value::Array(values.into()));
+            }
             Op::Tuple(n) => {
                 let mut vals = vec![];
                 for _ in 0..*n {
@@ -369,8 +407,8 @@ impl Machine {
                             Rc::make_mut(&mut elements)[i as usize] = value;
                             self.stack.push(Value::Array(elements))
                         }
-                    },
-                    _ => Err("Unexpected update for non-int or non-array")?
+                    }
+                    _ => Err("Unexpected update for non-int or non-array")?,
                 }
             }
             Op::ArrayAccess => {
@@ -380,9 +418,10 @@ impl Machine {
 
                 match (index, array) {
                     (Value::Int(i), Value::Array(elements)) => {
-                        self.stack.push(elements.get(i as usize).cloned().unwrap_or(default));
-                    },
-                    _ => Err("Unexpected array access for non-int or non-array")?
+                        self.stack
+                            .push(elements.get(i as usize).cloned().unwrap_or(default));
+                    }
+                    _ => Err("Unexpected array access for non-int or non-array")?,
                 }
             }
         }
@@ -466,7 +505,27 @@ fn compile_expr(expr: ast::Expr, buffer: &mut Vec<Op>) -> Result<(), String> {
         ast::Expr::Eq(op1, op2) => {
             compile_expr(*op1, buffer)?;
             compile_expr(*op2, buffer)?;
-            buffer.push(Op::Compare);
+            buffer.push(Op::CompareEq);
+        }
+        ast::Expr::Lt(op1, op2) => {
+            compile_expr(*op1, buffer)?;
+            compile_expr(*op2, buffer)?;
+            buffer.push(Op::CompareLt);
+        }
+        ast::Expr::Lte(op1, op2) => {
+            compile_expr(*op1, buffer)?;
+            compile_expr(*op2, buffer)?;
+            buffer.push(Op::CompareLte);
+        }
+        ast::Expr::Gt(op1, op2) => {
+            compile_expr(*op1, buffer)?;
+            compile_expr(*op2, buffer)?;
+            buffer.push(Op::CompareGt);
+        }
+        ast::Expr::Gte(op1, op2) => {
+            compile_expr(*op1, buffer)?;
+            compile_expr(*op2, buffer)?;
+            buffer.push(Op::CompareGte);
         }
         ast::Expr::If { test, then, alt } => {
             compile_expr(*test, buffer)?;
@@ -516,11 +575,20 @@ fn compile_expr(expr: ast::Expr, buffer: &mut Vec<Op>) -> Result<(), String> {
         }
         ast::Expr::ArrayInit { elements, update } => {
             let length = elements.len();
+            let mut copy = false;
             for (element, rest) in elements.into_iter().rev() {
-                assert!(!rest);
+                if rest && length == 1 {
+                    copy = true;
+                } else if rest {
+                    unimplemented!()
+                }
                 compile_expr(element, buffer)?
-            };
-            buffer.push(Op::Array(length));
+            }
+
+            if !copy {
+                buffer.push(Op::Array(length));
+            }
+
             if let Some((index, value)) = update.map(|x| *x) {
                 compile_expr(index, buffer)?;
                 compile_expr(value, buffer)?;
@@ -528,10 +596,16 @@ fn compile_expr(expr: ast::Expr, buffer: &mut Vec<Op>) -> Result<(), String> {
             }
         }
         ast::Expr::ImplicitArrayInit { init, length } => {
-            todo!()
+            compile_expr(*length, buffer)?;
+            compile_expr(*init, buffer)?;
+            buffer.push(Op::DynArray);
         }
-        ast::Expr::ArrayAccess { array, index, default } => {
-            buffer.push(Op::Load(array));
+        ast::Expr::ArrayAccess {
+            array,
+            index,
+            default,
+        } => {
+            compile_expr(*array, buffer)?;
             compile_expr(*index, buffer)?;
             compile_expr(*default, buffer)?;
             buffer.push(Op::ArrayAccess);

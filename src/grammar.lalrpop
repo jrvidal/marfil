@@ -36,7 +36,7 @@ DeclarationsAndExpr: (Vec<Declaration>, Expr) = {
 Declaration: Declaration = {
     <expr: Expr> ";" => Declaration::Expr(expr),
     "let" <var: Var> "=" <expr: Expr> ";" => Declaration::Let(interner.insert(var), expr),
-    "letrec" <var: Var> ":" <ty: Type> "=" <expr: Expr> ";" => Declaration::LetRec(interner.insert(var), ty, expr),
+    "letrec" <var: Var> <ty:(":" Type)?> "=" <expr: Expr> ";" => Declaration::LetRec(interner.insert(var), ty.map(|ty| ty.1), expr),
     "type" <name: Var> "=" <ty: Type> ";" => Declaration::Type(interner.insert_type(name), ty)
 }
 
@@ -51,24 +51,33 @@ Factor1: Expr = {
 };
 
 Factor2: Expr = {
-    <op1: Factor2> "+" <op2: Factor3> => Expr::Plus(Box::new(op1), Box::new(op2)),
-    <op1: Factor2> "-" <op2: Factor3> => Expr::Minus(Box::new(op1), Box::new(op2)),
+    <op1: Factor2> "==" <op2: Factor3> => Expr::Eq(Box::new(op1), Box::new(op2)),
+    <op1: Factor2> "<" <op2: Factor3> => Expr::Lt(Box::new(op1), Box::new(op2)),
+    <op1: Factor2> "<=" <op2: Factor3> => Expr::Lte(Box::new(op1), Box::new(op2)),
+    <op1: Factor2> ">" <op2: Factor3> => Expr::Gt(Box::new(op1), Box::new(op2)),
+    <op1: Factor2> ">=" <op2: Factor3> => Expr::Gte(Box::new(op1), Box::new(op2)),
     Factor3 => <>
 }
 
-Factor3: Expr ={
-    <op1: Factor3> "*" <op2: Factor4> => Expr::Prod(Box::new(op1), Box::new(op2)),
-    <op1: Factor3> "/" <op2: Factor4> => Expr::Div(Box::new(op1), Box::new(op2)),
-    <op1: Factor3> "&&" <op2: Factor4> => Expr::And(Box::new(op1), Box::new(op2)),
-    <op1: Factor3> "||" <op2: Factor4> => Expr::Or(Box::new(op1), Box::new(op2)),
-    <op1: Factor3> "==" <op2: Factor4> => Expr::Eq(Box::new(op1), Box::new(op2)),
-    Factor4 => <>,
+Factor3: Expr = {
+    <op1: Factor3> "+" <op2: Factor4> => Expr::Plus(Box::new(op1), Box::new(op2)),
+    <op1: Factor3> "-" <op2: Factor4> => Expr::Minus(Box::new(op1), Box::new(op2)),
+    Factor4 => <>
 }
 
 Factor4: Expr ={
+    <op1: Factor4> "*" <op2: Factor5> => Expr::Prod(Box::new(op1), Box::new(op2)),
+    <op1: Factor4> "/" <op2: Factor5> => Expr::Div(Box::new(op1), Box::new(op2)),
+    <op1: Factor4> "&&" <op2: Factor5> => Expr::And(Box::new(op1), Box::new(op2)),
+    <op1: Factor4> "||" <op2: Factor5> => Expr::Or(Box::new(op1), Box::new(op2)),
+    Factor5 => <>,
+}
+
+Factor5: Expr ={
     "!" <expr: Atom> => Expr::Neg(Box::new(expr)),
     <expr: Atom> <index: r"\.[0-9]+"> => Expr::TupleAccess(Box::new(expr), usize::from_str(&index[1..]).unwrap()),
-    <array: Var> "[" <index: Atom> "]" "|" <default: Atom> => Expr::ArrayAccess { array: interner.insert(array), index: index.into(), default: default.into() },
+    <array: Var> "[" <index: Atom> "]" "|" <default: Atom> => Expr::ArrayAccess { array: { let index = interner.insert(array); Expr::Var(index).into() }, index: index.into(), default: default.into() },
+    "(" <array: Expr> ")" "[" <index: Atom> "]" "|" <default: Atom> => Expr::ArrayAccess { array: array.into(), index: index.into(), default: default.into() },
     Atom => <>,
 }
 
